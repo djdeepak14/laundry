@@ -1,5 +1,4 @@
-require('dotenv').config(); // Load .env
-
+require('dotenv').config();
 const express = require("express");
 const cors = require("cors");
 const bcrypt = require("bcrypt");
@@ -12,31 +11,42 @@ const app = express();
 // ---------------------
 // Environment Validation
 // ---------------------
-const { MONGO_URI, JWT_SECRET, PORT = 3002 } = process.env;
+const { MONGO_URI, JWT_SECRET, PORT = 5001 } = process.env;
 if (!MONGO_URI) throw new Error("MONGO_URI is not defined in .env");
 if (!JWT_SECRET) throw new Error("JWT_SECRET is not defined in .env");
 
 // ---------------------
 // Middleware
 // ---------------------
+const allowedOrigins = [
+  process.env.FRONTEND_URL || 'http://localhost:3000',
+  'http://localhost:3001'
+];
+
 app.use(cors({
-  origin: process.env.FRONTEND_URL || 'http://localhost:3000', // Restrict to frontend URL
-  methods: ['GET', 'POST', 'PUT', 'DELETE'],
+  origin: (origin, callback) => {
+    if (!origin) return callback(null, true); // allow Postman or curl
+    if (allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
-  credentials: true // Allow cookies if needed
+  credentials: true
 }));
+
 app.use(bodyParser.json());
 
 // ---------------------
 // MongoDB Connection
 // ---------------------
-mongoose.connect(MONGO_URI, { 
-  serverSelectionTimeoutMS: 5000 // Timeout for MongoDB connection
-})
+mongoose.connect(MONGO_URI, { serverSelectionTimeoutMS: 5000 })
   .then(() => console.log("✅ MongoDB connected"))
   .catch((err) => {
     console.error("❌ MongoDB connection error:", err.message);
-    process.exit(1); // Exit if MongoDB fails
+    process.exit(1);
   });
 
 // ---------------------
@@ -66,17 +76,12 @@ const Booking = mongoose.model("Booking", bookingSchema);
 // ---------------------
 const verifyToken = (req, res, next) => {
   const token = req.headers.authorization?.split(' ')[1];
-  if (!token) {
-    console.warn("No token provided in request");
-    return res.status(401).json({ message: "No token provided" });
-  }
-
+  if (!token) return res.status(401).json({ message: "No token provided" });
   try {
     const decoded = jwt.verify(token, JWT_SECRET);
     req.user = decoded;
     next();
   } catch (err) {
-    console.error("Token verification failed:", err.message);
     return res.status(401).json({ message: "Invalid token" });
   }
 };
@@ -84,143 +89,70 @@ const verifyToken = (req, res, next) => {
 // ---------------------
 // Routes
 // ---------------------
+app.get("/", (req, res) => res.send("🚀 Laundry backend is running!"));
 
-// Root route
-app.get("/", (req, res) => {
-  res.send("🚀 Laundry backend is running!");
-});
-
-// Register
 app.post("/register", async (req, res) => {
   try {
     const { username, password } = req.body;
-    if (!username || !password) {
-      console.warn("Missing username or password in register request");
-      return res.status(400).json({ message: "Username and password required" });
-    }
+    if (!username || !password) return res.status(400).json({ message: "Username and password required" });
 
     const existingUser = await User.findOne({ username });
-    if (existingUser) {
-      console.warn(`User ${username} already exists`);
-      return res.status(400).json({ message: "User already exists" });
-    }
+    if (existingUser) return res.status(400).json({ message: "User already exists" });
 
     const hashedPassword = await bcrypt.hash(password, 10);
-    const newUser = new User({ username, password: hashedPassword });
-    await newUser.save();
+    await new User({ username, password: hashedPassword }).save();
 
-    console.log(`User ${username} registered successfully`);
     res.json({ message: "User registered successfully" });
   } catch (err) {
-    console.error("Register error:", err.message);
     res.status(500).json({ message: "Internal server error" });
   }
 });
 
-// Login
 app.post("/login", async (req, res) => {
   try {
     const { username, password } = req.body;
-    if (!username || !password) {
-      console.warn("Missing username or password in login request");
-      return res.status(400).json({ message: "Username and password required" });
-    }
+    if (!username || !password) return res.status(400).json({ message: "Username and password required" });
 
     const user = await User.findOne({ username });
-    if (!user) {
-      console.warn(`Login failed: User ${username} not found`);
-      return res.status(401).json({ message: "Invalid username or password" });
-    }
+    if (!user) return res.status(401).json({ message: "Invalid username or password" });
 
     const isMatch = await bcrypt.compare(password, user.password);
-    if (!isMatch) {
-      console.warn(`Login failed: Incorrect password for ${username}`);
-      return res.status(401).json({ message: "Invalid username or password" });
-    }
+    if (!isMatch) return res.status(401).json({ message: "Invalid username or password" });
 
     const token = jwt.sign({ id: user._id, username }, JWT_SECRET, { expiresIn: "1h" });
-    console.log(`Login successful for ${username}`);
     res.json({ token, userId: user._id });
-  } catch (err) {
-    console.error("Login error:", err.message);
+  } catch {
     res.status(500).json({ message: "Internal server error" });
   }
 });
 
-// Get bookings
+// Bookings routes
 app.get("/bookings", verifyToken, async (req, res) => {
-  try {
-    const bookings = await Booking.find({ userId: req.user.id });
-    res.json(bookings);
-  } catch (err) {
-    console.error("Get bookings error:", err.message);
-    res.status(500).json({ message: "Internal server error" });
-  }
+  const bookings = await Booking.find({ userId: req.user.id });
+  res.json(bookings);
 });
 
-// Create booking
 app.post("/bookings", verifyToken, async (req, res) => {
-  try {
-    const { slotId, machine, machineType, dayName, date, timeSlot, timestamp } = req.body;
-    if (!slotId || !machine || !machineType || !dayName || !date || !timeSlot || !timestamp) {
-      console.warn("Missing booking fields in request");
-      return res.status(400).json({ message: "All booking fields required" });
-    }
+  const { slotId, machine, machineType, dayName, date, timeSlot, timestamp } = req.body;
+  if (!slotId || !machine || !machineType || !dayName || !date || !timeSlot || !timestamp)
+    return res.status(400).json({ message: "All booking fields required" });
 
-    const booking = new Booking({
-      userId: req.user.id,
-      slotId,
-      machine,
-      machineType,
-      dayName,
-      date: new Date(date),
-      timeSlot,
-      timestamp,
-    });
-
-    const saved = await booking.save();
-    console.log(`Booking created for user ${req.user.id}`);
-    res.json(saved);
-  } catch (err) {
-    console.error("Create booking error:", err.message);
-    res.status(500).json({ message: "Internal server error" });
-  }
+  const booking = new Booking({ userId: req.user.id, slotId, machine, machineType, dayName, date, timeSlot, timestamp });
+  await booking.save();
+  res.json(booking);
 });
 
-// Delete booking
 app.delete("/bookings/:id", verifyToken, async (req, res) => {
   const { id } = req.params;
-  if (!mongoose.Types.ObjectId.isValid(id)) {
-    console.warn(`Invalid booking ID: ${id}`);
-    return res.status(400).json({ message: "Invalid booking ID" });
-  }
+  if (!mongoose.Types.ObjectId.isValid(id)) return res.status(400).json({ message: "Invalid booking ID" });
 
-  try {
-    const booking = await Booking.findOneAndDelete({ _id: id, userId: req.user.id });
-    if (!booking) {
-      console.warn(`Booking ${id} not found or not authorized for user ${req.user.id}`);
-      return res.status(404).json({ message: "Booking not found or not authorized" });
-    }
-    console.log(`Booking ${id} deleted for user ${req.user.id}`);
-    res.json({ message: `Booking ${id} deleted` });
-  } catch (err) {
-    console.error("Delete booking error:", err.message);
-    res.status(500).json({ message: "Internal server error" });
-  }
-});
+  const booking = await Booking.findOneAndDelete({ _id: id, userId: req.user.id });
+  if (!booking) return res.status(404).json({ message: "Booking not found or not authorized" });
 
-// ---------------------
-// Error Handling Middleware
-// ---------------------
-app.use((err, req, res, next) => {
-  console.error("Unexpected error:", err.message);
-  res.status(500).json({ message: "Internal server error" });
+  res.json({ message: `Booking ${id} deleted` });
 });
 
 // ---------------------
 // Start server
 // ---------------------
-app.listen(PORT, () => {
-  console.log(`🚀 Server running on port ${PORT}`);
-  console.log(`API available at http://localhost:${PORT}`);
-});
+app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
